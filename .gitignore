@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+server/.env
+server/.env.*
+.DS_Store
+coverage
+pnpm-lock.yaml
+
+# Android
+android-executor/.gradle/
+android-executor/**/build/
+android-executor/.idea/
+android-executor/local.properties
+*.iml

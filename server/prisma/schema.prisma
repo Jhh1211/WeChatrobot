@@ -1,0 +1,612 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlatformType {
+  worktool
+  self_hosted
+}
+
+enum OnlineStatus {
+  online
+  offline
+  unknown
+}
+
+enum EventSourceType {
+  callback
+  history_compensation
+  manual_replay
+  android_accessibility
+}
+
+enum EventStatus {
+  pending
+  processed
+  failed
+  duplicate
+}
+
+enum ChatType {
+  group
+  private
+  system
+}
+
+enum MessageType {
+  text
+  image
+  audio
+  file
+  system
+  unknown
+}
+
+enum KnowledgeType {
+  faq
+  activity
+  project
+  talk
+  risk
+}
+
+enum RuleType {
+  trigger
+  block
+  risk
+  proactive
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+  blocked
+}
+
+enum SendStatus {
+  pending
+  pending_executor
+  success
+  failed
+  cancelled
+}
+
+enum JobStatus {
+  running
+  success
+  failed
+}
+
+enum DevicePlatform {
+  android
+}
+
+enum DeviceRuntimeStatus {
+  online
+  offline
+}
+
+enum ExecutorTaskType {
+  send_text
+}
+
+enum ExecutorTaskStatus {
+  pending
+  claimed
+  running
+  success
+  failed
+  cancelled
+}
+
+enum ExecutorAttemptStatus {
+  running
+  success
+  failed
+}
+
+enum RetrievalMode {
+  off
+  keyword_first
+  vector_first
+  hybrid
+}
+
+enum CannedMatchType {
+  contains
+  exact
+  regex
+}
+
+enum CannedScopeType {
+  global
+  group
+}
+
+enum ReplyTraceStatus {
+  pending
+  completed
+  skipped_risk
+  skipped_policy
+  skipped_no_reply
+  skipped_filter
+  failed
+}
+
+model Robot {
+  id                String       @id @default(cuid())
+  robotId           String       @unique
+  name              String
+  platform          PlatformType @default(self_hosted)
+  callbackUrl       String?
+  callbackEnabled   Boolean      @default(false)
+  replyAll          Boolean      @default(true)
+  onlineStatus      OnlineStatus @default(unknown)
+  lastOnlineAt      DateTime?
+  lastHealthCheckAt DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  inboundEvents     InboundEvent[]
+  inboundMessages   InboundMessage[]
+  outboundMessages  OutboundMessage[]
+  devices           Device[]
+  executorTasks     ExecutorTask[]
+
+  @@index([onlineStatus, updatedAt])
+}
+
+model Device {
+  id             String              @id @default(cuid())
+  deviceId       String              @unique
+  robotId        String
+  robot          Robot               @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  name           String
+  platform       DevicePlatform      @default(android)
+  appVersion     String?
+  deviceModel    String?
+  androidVersion String?
+  status         DeviceRuntimeStatus @default(offline)
+  lastSeenAt     DateTime?
+  capability     Json
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  executorTasks ExecutorTask[]
+  attempts      ExecutorTaskAttempt[]
+  heartbeats    DeviceHeartbeat[]
+
+  @@index([robotId, status])
+  @@index([lastSeenAt])
+}
+
+model ExecutorTask {
+  id                      String             @id @default(cuid())
+  taskUid                 String             @unique
+  robotId                 String
+  robot                   Robot              @relation(fields: [robotId], references: [id], onDelete: Cascade)
+  deviceId                String?
+  device                  Device?            @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  type                    ExecutorTaskType
+  status                  ExecutorTaskStatus @default(pending)
+  priority                Int                @default(0)
+  targetChatTitle         String
+  payload                 Json
+  relatedInboundMessageId String?
+  outboundMessageId       String?            @unique
+  outboundMessage         OutboundMessage?   @relation(fields: [outboundMessageId], references: [id], onDelete: SetNull)
+  claimedAt               DateTime?
+  finishedAt              DateTime?
+  errorMessage            String?
+  retryCount              Int                @default(0)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  attempts ExecutorTaskAttempt[]
+
+  @@index([robotId, status, priority(sort: Desc), createdAt])
+  @@index([status, createdAt])
+}
+
+model ExecutorTaskAttempt {
+  id              String                @id @default(cuid())
+  taskId          String
+  task            ExecutorTask          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  deviceId        String
+  device          Device                @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  startedAt       DateTime              @default(now())
+  finishedAt      DateTime?
+  status          ExecutorAttemptStatus
+  requestPayload  Json?
+  responsePayload Json?
+  errorMessage    String?
+
+  @@index([taskId])
+  @@index([deviceId])
+}
+
+model DeviceHeartbeat {
+  id         String   @id @default(cuid())
+  deviceId   String
+  device     Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  receivedAt DateTime @default(now())
+  detail     Json?
+
+  @@index([deviceId, receivedAt])
+}
+
+model Group {
+  id                      String      @id @default(cuid())
+  externalGroupId         String?
+  title                   String
+  city                    String?
+  enabled                 Boolean     @default(true)
+  autoReplyEnabled       Boolean     @default(true)
+  proactiveEnabled        Boolean     @default(true)
+  dailyProactiveLimit     Int         @default(10)
+  cooldownSeconds         Int         @default(180)
+  silenceThresholdSeconds Int         @default(600)
+  maxRobotMessagesPerHour Int         @default(8)
+  targetIdHint            String?
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  members            GroupMember[]
+  messages           InboundMessage[]
+  conversationStates ConversationState[]
+  rules              RuleConfig[]
+  outboundMessages   OutboundMessage[]
+  replyPolicy        GroupReplyPolicy?
+  cannedRules        CannedReplyRule[]
+
+  @@index([enabled, autoReplyEnabled])
+  @@index([city])
+}
+
+model GroupMember {
+  id             String   @id @default(cuid())
+  groupId        String
+  externalUserId String?
+  nickname       String
+  remark         String?
+  isRobot        Boolean  @default(false)
+  joinedAt       DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([externalUserId])
+}
+
+model InboundEvent {
+  id                 String          @id @default(cuid())
+  eventUid           String          @unique
+  robotId            String
+  rawPayload         Json
+  sourceType         EventSourceType @default(callback)
+  callbackReceivedAt DateTime
+  processedAt        DateTime?
+  status             EventStatus     @default(pending)
+  errorMessage       String?
+  createdAt          DateTime        @default(now())
+
+  robot    Robot            @relation(fields: [robotId], references: [id], onDelete: Restrict)
+  messages InboundMessage[]
+
+  @@index([robotId, createdAt])
+  @@index([status, callbackReceivedAt])
+}
+
+model InboundMessage {
+  id                    String      @id @default(cuid())
+  eventId               String
+  robotId               String
+  groupId               String?
+  senderId              String?
+  senderName            String?
+  chatType              ChatType
+  messageType           MessageType
+  semanticKind          String?
+  inboundCapturedAt     DateTime?
+  messageText           String?
+  messageTextNormalized String?
+  externalMessageId     String?
+  replyToMessageId      String?
+  sentAt                DateTime?
+  isFromRobot           Boolean     @default(false)
+  createdAt             DateTime    @default(now())
+
+  event          InboundEvent    @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  robot          Robot           @relation(fields: [robotId], references: [id], onDelete: Restrict)
+  group          Group?          @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  replyDecisions ReplyDecision[]
+  replyTraces    ReplyTrace[]
+
+  @@index([eventId])
+  @@index([robotId, createdAt])
+  @@index([groupId, createdAt])
+  @@index([externalMessageId])
+}
+
+model ConversationState {
+  id                String    @id @default(cuid())
+  groupId           String
+  userId            String?
+  recentSummary     String?
+  lastUserMessageAt DateTime?
+  lastHumanReplyAt  DateTime?
+  lastRobotReplyAt  DateTime?
+  lastIntent        String?
+  leadScore         Decimal   @default(0) @db.Decimal(6, 2)
+  updatedAt         DateTime  @updatedAt
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([groupId, updatedAt])
+}
+
+model KnowledgeDocument {
+  id           String               @id @default(cuid())
+  title        String
+  type         KnowledgeType
+  city         String?
+  tags         Json
+  content      String
+  embedding    Json?
+  enabled      Boolean              @default(true)
+  version      Int                  @default(1)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  collectionId String?
+  collection   KnowledgeCollection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  source       String?
+  chunks       KnowledgeChunk[]
+
+  @@index([enabled, type])
+  @@index([city])
+  @@index([collectionId])
+}
+
+model KnowledgeCollection {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents KnowledgeDocument[]
+  policies  GroupReplyPolicy[]
+}
+
+model KnowledgeChunk {
+  id         String            @id @default(cuid())
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content    String
+  chunkIndex Int
+  embedding  Json?
+  enabled    Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([documentId])
+  @@index([enabled])
+}
+
+model ReplyProfile {
+  id            String   @id @default(cuid())
+  name          String
+  systemPrompt  String
+  stylePrompt   String?
+  language      String   @default("zh-CN")
+  maxChars      Int      @default(120)
+  emojiPolicy   String   @default("allow_limited")
+  mentionPolicy String   @default("avoid_unless_needed")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  policies           GroupReplyPolicy[]
+  runtimeDefaultFor  RuntimeConfig?     @relation("RuntimeDefaultProfile")
+}
+
+model RuntimeConfig {
+  id                    String         @id @default("singleton")
+  llmBaseUrl            String?
+  llmApiKey             String?
+  llmModel              String?
+  // standard=现有 LLM；ark_bot=火山方舟联网 Bot
+  replyLlmProvider      String         @default("standard")
+  arkBotBaseUrl         String?
+  arkBotModel           String?
+  arkBotApiKey          String?
+  embeddingBaseUrl      String?
+  embeddingApiKey       String?
+  embeddingModel        String?
+  defaultLanguage       String         @default("zh-CN")
+  defaultReplyProfileId String?        @unique
+  defaultReplyProfile   ReplyProfile?  @relation("RuntimeDefaultProfile", fields: [defaultReplyProfileId], references: [id], onDelete: SetNull)
+  retrievalMode         RetrievalMode  @default(keyword_first)
+  knowledgeFirst        Boolean        @default(true)
+  allowLlmFallback      Boolean        @default(true)
+  maxReplyChars         Int            @default(120)
+  defaultStyleHint      String?
+  updatedAt             DateTime       @updatedAt
+}
+
+model GroupReplyPolicy {
+  id                    String              @id @default(cuid())
+  groupId               String              @unique
+  group                 Group               @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  autoReplyEnabled      Boolean             @default(true)
+  replyProfileId        String?
+  replyProfile          ReplyProfile?       @relation(fields: [replyProfileId], references: [id], onDelete: SetNull)
+  knowledgeCollectionId String?
+  knowledgeCollection   KnowledgeCollection? @relation(fields: [knowledgeCollectionId], references: [id], onDelete: SetNull)
+  retrievalMode         RetrievalMode       @default(keyword_first)
+  knowledgeFirst        Boolean             @default(true)
+  cannedFirst           Boolean             @default(true)
+  scoreThreshold        Int?
+  cooldownSeconds       Int?
+  riskInterceptEnabled  Boolean             @default(true)
+  humanTakeover         Boolean             @default(false)
+  enabled               Boolean             @default(true)
+  // null=继承运行配置；standard / ark_bot 覆盖本群
+  replyLlmProvider      String?
+  /// 是否把「同群 + 同发言人昵称 + 近窗口」内的用户话与助手回复拼进 LLM 参考（发言人以客户端上报的昵称为准）
+  sameSenderContextEnabled       Boolean @default(true)
+  /// 向前追溯分钟数（锚点为当前入站消息时间）
+  sameSenderContextWindowMinutes Int     @default(5)
+  /// 最多纳入几条该用户消息
+  sameSenderContextMaxUserMessages Int   @default(8)
+  /// 最多纳入几条本助手在该群的发送记录
+  sameSenderContextMaxBotMessages  Int   @default(5)
+  /// 上述参考块写入 LLM 前的总字符上限（含版式说明）
+  sameSenderContextMaxTotalChars   Int   @default(3500)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+}
+
+model CannedReplyRule {
+  id         String           @id @default(cuid())
+  scopeType  CannedScopeType
+  groupId    String?
+  group      Group?           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  keyword    String
+  matchType  CannedMatchType  @default(contains)
+  replyText  String
+  priority   Int              @default(100)
+  enabled    Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([enabled, scopeType, priority])
+  @@index([groupId])
+}
+
+model ReplyTrace {
+  id                   String           @id @default(cuid())
+  inboundMessageId     String
+  inboundMessage       InboundMessage   @relation(fields: [inboundMessageId], references: [id], onDelete: Cascade)
+  groupId              String?
+  status               ReplyTraceStatus @default(pending)
+  normalizedText       String?
+  semanticMessageType  String?
+  skipAutoReplyReason  String?
+  enteredAiPipeline    Boolean          @default(false)
+  burstGroupedCount    Int?
+  mergedMessagesPreview String?         @db.Text
+  finalUserPromptPreview String?        @db.Text
+  /// 同发言人上下文所用昵称键（规范化后），供后台按用户筛选 Trace
+  sameSenderContextSenderKey String?
+  /// 同发言人上下文元数据：userLines/botLines/windowMinutes/truncated 等
+  sameSenderContextMeta       Json?
+  latencyBreakdown     Json?
+  decisionSnapshot     Json?
+  matchedCannedRuleId  String?
+  matchedKnowledgeIds  Json?
+  replyProfileId       String?
+  retrievalMode        String?
+  knowledgeSnippets    Json?
+  promptPreview        String?
+  llmResponsePreview   String?
+  finalReply           String?
+  replySource          String?
+  outboundMessageId    String?
+  executorTaskId       String?
+  androidResult        Json?
+  errorMessage         String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([inboundMessageId, createdAt])
+  @@index([groupId, createdAt])
+  @@index([status])
+  @@index([sameSenderContextSenderKey, groupId])
+}
+
+model RuleConfig {
+  id        String   @id @default(cuid())
+  name      String
+  enabled   Boolean  @default(true)
+  groupId   String?
+  type      RuleType
+  priority  Int      @default(100)
+  config    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group Group? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@index([groupId, enabled, type, priority])
+}
+
+model ReplyDecision {
+  id               String    @id @default(cuid())
+  inboundMessageId String
+  shouldReply      Boolean
+  score            Decimal   @db.Decimal(6, 2)
+  riskLevel        RiskLevel
+  matchedRules     Json
+  intent           String?
+  reason           String
+  delayMs          Int?
+  createdAt        DateTime  @default(now())
+
+  inboundMessage InboundMessage @relation(fields: [inboundMessageId], references: [id], onDelete: Cascade)
+
+  @@index([inboundMessageId, createdAt])
+}
+
+model OutboundMessage {
+  id                      String         @id @default(cuid())
+  robotId                 String
+  groupId                 String?
+  relatedInboundMessageId String?
+  content                 String
+  targetTitle             String
+  sendStatus              SendStatus     @default(pending)
+  sendRequest             Json
+  sendResponse            Json?
+  sentAt                  DateTime?
+  createdAt               DateTime       @default(now())
+
+  robot         Robot          @relation(fields: [robotId], references: [id], onDelete: Restrict)
+  group         Group?         @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  executorTask  ExecutorTask?
+
+  @@index([robotId, createdAt])
+  @@index([groupId, createdAt])
+  @@index([sendStatus, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  action     String
+  detail     Json
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt])
+}
+
+model JobRun {
+  id         String    @id @default(cuid())
+  jobName    String
+  status     JobStatus
+  startedAt  DateTime
+  finishedAt DateTime?
+  detail     Json?
+
+  @@index([jobName, startedAt])
+}

@@ -1,0 +1,54 @@
+{
+  "name": "wework-ai-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Enterprise WeCom external group AI assistant backend MVP",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.12.3",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "manual:register-device": "tsx scripts/manual/register-device.ts",
+    "manual:send-heartbeat": "tsx scripts/manual/send-heartbeat.ts",
+    "manual:mock-inbound-event": "tsx scripts/manual/mock-inbound-event.ts",
+    "manual:pull-task": "tsx scripts/manual/pull-task.ts",
+    "manual:ack-task": "tsx scripts/manual/ack-task.ts",
+    "manual:report-task-result": "tsx scripts/manual/report-task-result.ts",
+    "manual:create-test-send-task": "tsx scripts/manual/create-test-send-task.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/sensible": "^5.6.0",
+    "@prisma/client": "^5.20.0",
+    "axios": "^1.7.7",
+    "bullmq": "^5.21.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.4.1",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.1",
+    "prisma": "^5.20.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

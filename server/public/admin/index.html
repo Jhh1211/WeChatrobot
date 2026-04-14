@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>企微助手 · 运营后台 V1</title>
+  <style>
+    :root { --bg: #0f1419; --card: #1a2332; --text: #e7edf5; --muted: #8b9cb3; --accent: #3d8bfd; --ok: #3ecf8e; --err: #f87171; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    header { padding: 12px 20px; border-bottom: 1px solid #2a3544; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 18px; }
+    input, textarea, select, button { font: inherit; }
+    input, textarea, select { background: #0d1117; border: 1px solid #30363d; color: var(--text); padding: 8px 10px; border-radius: 6px; width: 100%; max-width: 520px; }
+    textarea { min-height: 100px; max-width: 100%; }
+    button { background: var(--accent); color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; margin: 4px 8px 4px 0; }
+    button.secondary { background: #30363d; }
+    nav { display: flex; gap: 6px; flex-wrap: wrap; }
+    nav button { background: transparent; border: 1px solid #30363d; color: var(--muted); }
+    nav button.active { border-color: var(--accent); color: var(--accent); }
+    main { padding: 16px 20px 48px; max-width: 1200px; }
+    .panel { display: none; background: var(--card); border-radius: 10px; padding: 16px; margin-bottom: 16px; border: 1px solid #2a3544; }
+    .panel.visible { display: block; }
+    pre { background: #0d1117; padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; color: #c9d1d9; border: 1px solid #30363d; }
+    label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 13px; }
+    .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; align-items: end; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .trace-wrap .trace-card pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; margin: 0 0 12px; }
+    #login-shell { max-width: 400px; margin: 64px auto; padding: 24px; background: var(--card); border-radius: 12px; border: 1px solid #2a3544; }
+    #login-shell h1 { margin-top: 0; font-size: 20px; }
+    #login_err { color: var(--err); min-height: 1.2em; }
+    table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0 12px; }
+    table.data-table th, table.data-table td { border: 1px solid #30363d; padding: 8px 10px; text-align: left; vertical-align: top; }
+    table.data-table th { color: var(--muted); font-weight: 600; }
+    details.raw-json { margin: 12px 0; }
+    details.raw-json > summary { cursor: pointer; color: var(--muted); user-select: none; }
+    details.raw-json > summary:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div id="login-shell" style="display:none;">
+    <h1>运营后台登录</h1>
+    <p class="hint">请使用管理员账号登录，会话通过 HttpOnly Cookie 保持。</p>
+    <label>用户名</label>
+    <input id="login_user" autocomplete="username" />
+    <label>密码</label>
+    <input id="login_pass" type="password" autocomplete="current-password" />
+    <button type="button" id="login_btn" style="margin-top:12px;">登录</button>
+    <p id="login_err"></p>
+  </div>
+  <div id="main-shell" style="display:none;">
+  <header>
+    <h1>企微助手 · 运营后台</h1>
+    <span class="hint" id="whoami"></span>
+    <button type="button" class="secondary" id="logout_btn">退出登录</button>
+    <nav id="nav"></nav>
+  </header>
+  <main id="main"></main>
+  </div>
+  <script>
+    const API = "";
+    let panelsBuilt = false;
+    let _policiesCache = [];
+    let _groupsList = [];
+
+    const RETRIEVAL_OPTIONS_HTML = `
+      <option value="keyword_first">关键词优先</option>
+      <option value="vector_first">向量优先</option>
+      <option value="hybrid">混合检索</option>
+      <option value="off">关闭检索</option>`;
+
+    const RETRIEVAL_ZH = {
+      keyword_first: "关键词优先",
+      vector_first: "向量优先",
+      hybrid: "混合检索",
+      off: "关闭"
+    };
+
+    const TRACE_STATUS_ZH = {
+      pending: "处理中",
+      completed: "已完成",
+      skipped_risk: "已跳过（风控）",
+      skipped_policy: "已跳过（策略）",
+      skipped_no_reply: "已跳过（无需回复）",
+      skipped_filter: "已跳过（过滤）",
+      failed: "失败"
+    };
+
+    const DECISION_REASON_ZH = {
+      "score below threshold": "得分未达到触发阈值（未达自动回复门槛）",
+      "score reached threshold": "得分已达到触发阈值",
+      human_takeover: "群策略为人工接管，不自动回复",
+      group_reply_policy_disabled: "群回复策略已禁用",
+      "blocked by risk keywords": "风控：命中屏蔽关键词",
+      "blocked by risk intent": "风控：命中敏感意图"
+    };
+
+    const panels = [
+      { id: "cfg", title: "运行配置", html: `
+        <p class="hint">以下为解析后的生效值（数据库优先，未填则读环境变量）。密钥不会回显；仅在输入框填写新密钥才会写入数据库，留空表示不修改。</p>
+        <div class="row">
+          <div><label>LLM 服务地址</label><input id="c_llmUrl" placeholder="Base URL" /></div>
+          <div><label>LLM 模型名</label><input id="c_llmModel" /></div>
+          <div><label>LLM API Key</label><input id="c_llmKey" type="password" autocomplete="off" /></div>
+        </div>
+        <hr style="border-color:#30363d;margin:16px 0" />
+        <p class="hint"><strong>自动回复用哪个模型</strong>：默认走上方「标准 LLM」。选「火山联网 Bot」时需填写下方 Bot ID 与 Key（请求 <code>…/api/v3/bots/chat/completions</code>，<code>stream:false</code>）。知识库检索逻辑不变，仍会把片段一并写入 Prompt。</p>
+        <div class="row">
+          <div><label>回复所用模型（全局默认）</label>
+            <select id="c_replyLlm">
+              <option value="standard">标准 LLM（上方地址与模型）</option>
+              <option value="ark_bot">火山方舟联网 Bot</option>
+            </select></div>
+        </div>
+        <div class="row">
+          <div><label>联网 Bot 服务地址</label><input id="c_arkUrl" placeholder="https://ark.cn-beijing.volces.com/api/v3/bots" /></div>
+          <div><label>联网 Bot ID（model）</label><input id="c_arkModel" placeholder="bot-xxxxxxxx" /></div>
+          <div><label>联网 Bot API Key</label><input id="c_arkKey" type="password" autocomplete="off" /></div>
+        </div>
+        <button type="button" class="secondary" onclick="testConn('ark')">测试联网 Bot</button>
+        <div class="row">
+          <div><label>向量服务地址</label><input id="c_embUrl" /></div>
+          <div><label>向量模型名</label><input id="c_embModel" /></div>
+          <div><label>向量 API Key</label><input id="c_embKey" type="password" autocomplete="off" /></div>
+        </div>
+        <div class="row">
+          <div><label>默认语言</label><input id="c_lang" /></div>
+          <div><label>检索模式</label><select id="c_mode">${RETRIEVAL_OPTIONS_HTML}</select></div>
+          <div><label>最大回复字数</label><input id="c_max" type="number" /></div>
+        </div>
+        <div class="row">
+          <div><label>默认回复风格</label><select id="c_defProf"><option value="">不指定</option></select>
+            <span class="hint">未单独配置群策略时使用的 Profile</span></div>
+        </div>
+        <label><input type="checkbox" id="c_kf" /> 知识库优先</label>
+        <label><input type="checkbox" id="c_fallback" /> 允许纯模型兜底</label>
+        <button type="button" onclick="loadRuntime()">重新加载</button>
+        <button type="button" onclick="saveRuntime()">保存配置</button>
+        <button type="button" class="secondary" onclick="testConn('llm')">测试 LLM</button>
+        <button type="button" class="secondary" onclick="testConn('emb')">测试向量</button>
+        <details class="raw-json"><summary>展开完整 JSON（调试用）</summary><pre id="cfg_out"></pre></details>` },
+      { id: "prof", title: "回复风格", html: `
+        <button type="button" onclick="loadProfiles()">刷新列表</button>
+        <div id="prof_wrap"></div>
+        <details class="raw-json"><summary>展开原始 JSON</summary><pre id="prof_list"></pre></details>
+        <h3 id="prof_form_title">新建回复风格</h3>
+        <input type="hidden" id="p_edit_id" value="" />
+        <label>名称</label><input id="p_name" />
+        <label>系统提示词（systemPrompt）</label><textarea id="p_sys"></textarea>
+        <label>风格补充（stylePrompt）</label><textarea id="p_style"></textarea>
+        <div class="row">
+          <div><label>语言</label><input id="p_lang" value="zh-CN" /></div>
+          <div><label>最大字数</label><input id="p_max" type="number" value="120" /></div>
+        </div>
+        <div class="row">
+          <div><label>Emoji 策略</label><input id="p_emoji" value="allow_limited" />
+            <span class="hint">常用：allow_limited / none / allow</span></div>
+          <div><label>@提及 策略</label><input id="p_mention" value="avoid_unless_needed" />
+            <span class="hint">常用：avoid_unless_needed / never / allow</span></div>
+        </div>
+        <button type="button" id="p_submit_btn" onclick="submitProfile()">创建</button>
+        <button type="button" class="secondary" id="p_cancel_edit" style="display:none" onclick="cancelProfileEdit()">取消编辑</button>` },
+      { id: "kb", title: "知识库", html: `
+        <button type="button" onclick="loadCols()">刷新集合列表</button>
+        <div id="kb_cols_wrap"></div>
+        <details class="raw-json"><summary>展开集合 JSON</summary><pre id="kb_cols"></pre></details>
+        <label>新建集合名称</label><input id="col_name" /><button type="button" onclick="createCol()">创建集合</button>
+        <hr style="border-color:#30363d;margin:16px 0" />
+        <label>目标集合</label><select id="doc_col"><option value="">默认（不指定）</option></select>
+        <label>标题</label><input id="doc_title" />
+        <label>正文内容</label><textarea id="doc_content"></textarea>
+        <button type="button" onclick="createDoc()">创建文档</button>
+        <hr style="border-color:#30363d;margin:16px 0" />
+        <label>检索预览 · 关键词</label><input id="rq" />
+        <label>限定集合（可选）</label><select id="rq_col"><option value="">全部/默认</option></select>
+        <label>检索模式</label><select id="rq_mode">${RETRIEVAL_OPTIONS_HTML}</select>
+        <button type="button" onclick="previewRetr()">检索预览</button>
+        <details class="raw-json"><summary>展开检索结果 JSON</summary><pre id="kb_out"></pre></details>` },
+      { id: "pol", title: "群策略", html: `
+        <p class="hint">从下拉框选择企业微信群；保存时按群写入或更新策略。切换群时会自动带出该群已有策略（若有）。</p>
+        <button type="button" onclick="loadPolFull()">刷新策略与下拉数据</button>
+        <div id="pol_list"></div>
+        <label>选择群</label><select id="gp_group_sel"><option value="">请选择群…</option></select>
+        <label>本群回复模型</label>
+        <select id="gp_llm_prov">
+          <option value="">继承运行配置默认</option>
+          <option value="standard">标准 LLM</option>
+          <option value="ark_bot">火山联网 Bot</option>
+        </select>
+        <span class="hint">覆盖「运行配置」中的全局选择；继承时与全局一致。</span>
+        <label>回复风格</label><select id="gp_prof_sel"><option value="">不指定</option></select>
+        <label>知识库集合</label><select id="gp_col_sel"><option value="">不指定</option></select>
+        <label>相似度阈值（留空则使用规则默认）</label><input id="gp_thr" type="number" />
+        <label><input type="checkbox" id="gp_auto" checked /> 开启自动回复</label>
+        <label><input type="checkbox" id="gp_kf" checked /> 知识库优先</label>
+        <label><input type="checkbox" id="gp_can" checked /> 固定回复优先</label>
+        <label><input type="checkbox" id="gp_risk" checked /> 启用风控拦截</label>
+        <label><input type="checkbox" id="gp_human" /> 人工接管（停用自动回复链）</label>
+        <label>检索模式</label><select id="gp_mode">${RETRIEVAL_OPTIONS_HTML}</select>
+        <hr style="margin:16px 0;border:none;border-top:1px solid #ddd" />
+        <p class="hint"><strong>LLM · 同发言人近期对话参考</strong>（用于追问衔接；用户维度为<strong>发言人昵称</strong>，与客户端上报一致。后续流水线读取本段配置。）</p>
+        <label><input type="checkbox" id="gp_ssc_en" checked /> 启用「同发言人 + 时间窗」上下文</label>
+        <label>时间窗（分钟，向前追溯）</label><input id="gp_ssc_win" type="number" min="1" max="120" value="5" />
+        <label>最多几条该用户消息</label><input id="gp_ssc_umax" type="number" min="1" max="30" value="8" />
+        <label>最多几条本助手在该群的发送</label><input id="gp_ssc_bmax" type="number" min="0" max="20" value="5" />
+        <label>参考块总字符上限</label><input id="gp_ssc_chars" type="number" min="500" max="30000" value="3500" />
+        <button type="button" onclick="savePol()">保存当前群的策略</button>
+        <details class="raw-json"><summary>展开策略原始 JSON</summary><pre id="pol_raw"></pre></details>` },
+      { id: "can", title: "固定回复", html: `
+        <button type="button" onclick="loadCan()">刷新规则</button>
+        <div id="can_wrap"></div>
+        <details class="raw-json"><summary>展开原始 JSON</summary><pre id="can_list"></pre></details>
+        <label>作用范围</label>
+        <select id="cn_scope">
+          <option value="global">全局</option>
+          <option value="group">指定群</option>
+        </select>
+        <div id="cn_gid_row" style="display:none">
+          <label>选择群</label><select id="cn_gid_sel"><option value="">请选择群…</option></select>
+        </div>
+        <label>触发关键词</label><input id="cn_kw" />
+        <label>匹配方式</label>
+        <select id="cn_mt">
+          <option value="contains">包含</option>
+          <option value="exact">完全相等</option>
+          <option value="regex">正则</option>
+        </select>
+        <label>回复正文</label><textarea id="cn_txt"></textarea>
+        <label>优先级（数字越小越优先）</label><input id="cn_pri" type="number" value="10" />
+        <button type="button" onclick="createCan()">添加规则</button>` },
+      { id: "trace", title: "回复 Trace", html: `
+        <p class="hint">列表展示最近入站的处理轨迹。以下时间为 <strong>北京时间（UTC+8）</strong>，与数据库中的 UTC 时刻一致，仅展示时区不同。「无需回复」多为决策未触发（见决策详情）；入库标记为机器人侧时见「是否机器人消息」。</p>
+        <div class="row" style="align-items:end;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+          <div><label>筛选 · 群</label><select id="tr_filter_gid"><option value="">全部群</option></select></div>
+          <div><label>筛选 · 发言人昵称包含</label><input id="tr_filter_sender" placeholder="同发言人上下文键，模糊" style="min-width:160px" /></div>
+          <div><label>&nbsp;</label><button type="button" onclick="loadTrace()">刷新列表</button></div>
+        </div>
+        <div class="row" style="align-items:end;margin-bottom:8px;">
+          <div><label>导出 · 起始时间（可选）</label><input id="tr_exp_from" placeholder="如 2026-04-01 或 ISO 时间" /></div>
+          <div><label>导出 · 结束时间（可选）</label><input id="tr_exp_to" placeholder="留空表示不限" /></div>
+          <div><label>&nbsp;</label><label style="margin:0"><input type="checkbox" id="tr_exp_only_reply" /> 仅含已生成回复正文</label></div>
+          <div><label>&nbsp;</label><button type="button" class="secondary" onclick="exportTracesCsv()">下载 CSV 复盘表</button></div>
+        </div>
+        <p class="hint">导出 CSV 会沿用上方「群 / 发言人」筛选（若填写）。同发言人上下文参数在「群策略」中配置。</p>
+        <div id="tr_list" class="trace-wrap"></div>` },
+      { id: "tool", title: "工具", html: `
+        <h3>Reply 预览（不真实发送）</h3>
+        <label>选择群</label><select id="pv_gid_sel"><option value="">请选择群…</option></select>
+        <label>用户消息</label><textarea id="pv_msg"></textarea>
+        <button type="button" onclick="previewReply()">预览</button>
+        <details class="raw-json"><summary>展开返回 JSON</summary><pre id="pv_out"></pre></details>
+        <h3>群发烟测 send_text</h3>
+        <label>目标会话标题（与客户端展示一致）</label><input id="sm_title" />
+        <label>发送文本</label><input id="sm_text" />
+        <button type="button" onclick="smokeSend()">创建任务</button>
+        <details class="raw-json"><summary>展开返回 JSON</summary><pre id="sm_out"></pre></details>` }
+    ];
+
+    function showLogin(msg) {
+      document.getElementById("login-shell").style.display = "block";
+      document.getElementById("main-shell").style.display = "none";
+      const el = document.getElementById("login_err");
+      if (el) el.textContent = msg || "";
+    }
+
+    function showMain(me) {
+      document.getElementById("login-shell").style.display = "none";
+      document.getElementById("main-shell").style.display = "block";
+      const label =
+        me && me.via === "bearer_token"
+          ? "脚本鉴权（Bearer，非浏览器会话）"
+          : me && me.username
+            ? me.username
+            : "管理员";
+      document.getElementById("whoami").textContent = "当前：" + label;
+    }
+
+    async function api(method, path, body) {
+      const init = { method, credentials: "include" };
+      if (body !== undefined && body !== null) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify(body);
+      } else if (method === "POST" || method === "PUT" || method === "PATCH") {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = "{}";
+      }
+      const r = await fetch(API + path, init);
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 401) {
+        showLogin("未登录或会话已过期，请重新登录");
+        throw new Error(j.error?.message || "未授权");
+      }
+      if (!r.ok || j.success === false) throw new Error(j.error?.message || r.statusText);
+      return j;
+    }
+
+    async function trySession() {
+      const r = await fetch(API + "/api/admin/auth/me", { credentials: "include" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.success && j.data && j.data.username) {
+        showMain(j.data);
+        return true;
+      }
+      return false;
+    }
+
+    async function doLogin() {
+      const u = document.getElementById("login_user").value.trim();
+      const p = document.getElementById("login_pass").value;
+      document.getElementById("login_err").textContent = "";
+      try {
+        const r = await fetch(API + "/api/admin/auth/login", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: u, password: p })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.success === false) {
+          document.getElementById("login_err").textContent = j.error?.message || "登录失败";
+          return;
+        }
+        const ok = await trySession();
+        if (ok) init();
+      } catch (e) {
+        document.getElementById("login_err").textContent = e.message || "网络错误";
+      }
+    }
+
+    async function doLogout() {
+      try {
+        await fetch(API + "/api/admin/auth/logout", { method: "POST", credentials: "include" });
+      } catch (_) {}
+      panelsBuilt = false;
+      document.getElementById("nav").innerHTML = "";
+      document.getElementById("main").innerHTML = "";
+      showLogin("");
+      document.getElementById("login_user").value = "";
+      document.getElementById("login_pass").value = "";
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function groupLabel(g) {
+      if (!g) return "";
+      const t = (g.title || "").replace(/^title:/, "");
+      return t || g.id || "";
+    }
+
+    function fillGroupSelect(selId, placeholder) {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      const opts = (placeholder ? `<option value="">${placeholder}</option>` : "") +
+        _groupsList.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(groupLabel(g))}</option>`).join("");
+      sel.innerHTML = opts;
+    }
+
+    function fillProfileSelect(selId, items, withEmpty, emptyLabel) {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      let html = "";
+      if (withEmpty) html += `<option value="">${emptyLabel || "不指定"}</option>`;
+      html += (items || []).map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+      sel.innerHTML = html;
+    }
+
+    function fillCollectionSelect(selId, items, withEmpty, emptyLabel) {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      let html = "";
+      if (withEmpty) html += `<option value="">${emptyLabel || "不指定"}</option>`;
+      html += (items || []).map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join("");
+      sel.innerHTML = html;
+    }
+
+    async function refreshGroupsCache() {
+      const j = await api("GET", "/api/admin/groups?page=1&pageSize=500");
+      _groupsList = j.data.items || [];
+      return _groupsList;
+    }
+
+    function wirePanelListeners() {
+      const gsel = document.getElementById("gp_group_sel");
+      if (gsel) gsel.addEventListener("change", onPolicyGroupChange);
+      const scope = document.getElementById("cn_scope");
+      if (scope) scope.addEventListener("change", toggleCannedGroupRow);
+    }
+
+    function init() {
+      if (panelsBuilt) {
+        loadRuntime().catch((e) => console.error(e));
+        return;
+      }
+      panelsBuilt = true;
+      const nav = document.getElementById("nav");
+      const main = document.getElementById("main");
+      panels.forEach((p, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = p.title;
+        b.onclick = () => show(i);
+        nav.appendChild(b);
+        const div = document.createElement("div");
+        div.className = "panel" + (i === 0 ? " visible" : "");
+        div.id = "panel_" + p.id;
+        div.innerHTML = "<h2>" + p.title + "</h2>" + p.html;
+        main.appendChild(div);
+      });
+      window._navBtns = nav.querySelectorAll("button");
+      wirePanelListeners();
+      show(0);
+      loadRuntime().catch((e) => console.error(e));
+    }
+
+    function show(i) {
+      panels.forEach((p, idx) => {
+        document.getElementById("panel_" + p.id).classList.toggle("visible", idx === i);
+        window._navBtns[idx].classList.toggle("active", idx === i);
+      });
+      const id = panels[i].id;
+      if (id === "pol") loadPolFull().catch((e) => console.error(e));
+      if (id === "can") ensureCannedGroups().catch((e) => console.error(e));
+      if (id === "tool") ensureToolGroups().catch((e) => console.error(e));
+      if (id === "kb") ensureKbSelects().catch((e) => console.error(e));
+    }
+
+    function setKeyPlaceholders(d) {
+      const lk = document.getElementById("c_llmKey");
+      const ek = document.getElementById("c_embKey");
+      const ak = document.getElementById("c_arkKey");
+      lk.value = "";
+      ek.value = "";
+      if (ak) ak.value = "";
+      if (d.hasLlmApiKey) {
+        lk.placeholder =
+          d.llmApiKeySource === "db"
+            ? "密钥已在库中，留空不修改"
+            : "密钥来自环境变量，留空不修改；填写后写入数据库";
+      } else {
+        lk.placeholder = "尚未配置有效密钥，请填写并保存";
+      }
+      if (d.hasEmbeddingApiKey) {
+        ek.placeholder =
+          d.embeddingApiKeySource === "db"
+            ? "密钥已在库中，留空不修改"
+            : "密钥来自环境变量，留空不修改；填写后写入数据库";
+      } else {
+        ek.placeholder = "尚未配置 Embedding 密钥，请填写并保存";
+      }
+      if (ak) {
+        if (d.hasArkBotApiKey) {
+          ak.placeholder =
+            d.arkBotApiKeySource === "db"
+              ? "密钥已在库中，留空不修改"
+              : "来自环境变量或未单独配置（可能回退为 LLM Key），留空不修改";
+        } else {
+          ak.placeholder = "可填方舟 API Key；不填则尝试使用上方 LLM API Key";
+        }
+      }
+    }
+
+    async function loadRuntime() {
+      const j = await api("GET", "/api/admin/config/runtime");
+      const d = j.data;
+      document.getElementById("c_llmUrl").value = d.llmBaseUrl || "";
+      document.getElementById("c_llmModel").value = d.llmModel || "";
+      document.getElementById("c_replyLlm").value = d.replyLlmProvider === "ark_bot" ? "ark_bot" : "standard";
+      document.getElementById("c_arkUrl").value = d.arkBotBaseUrl || "";
+      document.getElementById("c_arkModel").value = d.arkBotModel || "";
+      document.getElementById("c_embUrl").value = d.embeddingBaseUrl || "";
+      document.getElementById("c_embModel").value = d.embeddingModel || "";
+      setKeyPlaceholders(d);
+      document.getElementById("c_lang").value = d.defaultLanguage || "zh-CN";
+      document.getElementById("c_mode").value = d.retrievalMode || "keyword_first";
+      document.getElementById("c_max").value = d.maxReplyChars || 120;
+      document.getElementById("c_kf").checked = !!d.knowledgeFirst;
+      document.getElementById("c_fallback").checked = !!d.allowLlmFallback;
+      const pj = await api("GET", "/api/admin/reply-profiles");
+      const profItems = pj.data.items || [];
+      fillProfileSelect("c_defProf", profItems, true, "不指定");
+      const defId = d.defaultReplyProfileId || "";
+      document.getElementById("c_defProf").value = profItems.some((x) => x.id === defId) ? defId : "";
+      document.getElementById("cfg_out").textContent = JSON.stringify(d, null, 2);
+    }
+
+    function fmtMs(ms) {
+      if (ms == null || ms === "") return "—";
+      return String(ms) + " ms";
+    }
+
+    /** API/库内为 UTC（如 …Z）；展示为北京时间，与群内「背景时间」一致 */
+    function fmtChinaTime(value) {
+      if (value == null || value === "" || value === "—") return "—";
+      const d = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value);
+      const parts = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).formatToParts(d);
+      const get = (type) => parts.find((p) => p.type === type)?.value ?? "";
+      return (
+        get("year") +
+        "-" +
+        get("month") +
+        "-" +
+        get("day") +
+        " " +
+        get("hour") +
+        ":" +
+        get("minute") +
+        ":" +
+        get("second") +
+        "（东八区）"
+      );
+    }
+
+    function traceStatusZh(s) {
+      return TRACE_STATUS_ZH[s] || s || "—";
+    }
+
+    function decisionReasonZh(reason) {
+      if (reason == null || reason === "") return "—";
+      return DECISION_REASON_ZH[reason] || String(reason);
+    }
+
+    function formatTraceCard(t) {
+      const im = t.inboundMessage || {};
+      const lat = t.latencyBreakdown || {};
+      const at = lat.at || {};
+      const ms = lat.ms || {};
+      const sscMetaStr = t.sameSenderContextMeta ? JSON.stringify(t.sameSenderContextMeta) : "";
+      const sscLine = t.sameSenderContextSenderKey
+        ? "键「" + t.sameSenderContextSenderKey + "」" +
+          (sscMetaStr
+            ? " · " + sscMetaStr.slice(0, 280) + (sscMetaStr.length > 280 ? "…" : "")
+            : "")
+        : "—（未带摘录或未配置昵称）";
+      const semantic = t.semanticMessageType || im.semanticKind || "—";
+      const snap = t.decisionSnapshot && typeof t.decisionSnapshot === "object" ? t.decisionSnapshot : null;
+      const filtered = t.status === "skipped_filter";
+      let enteredAiStr = "—";
+      if (t.status === "skipped_filter" || t.status === "skipped_no_reply") enteredAiStr = "否";
+      else if (t.llmResponsePreview || t.finalReply) enteredAiStr = "是";
+      else if (t.status === "failed") enteredAiStr = "尝试后失败";
+      const robotInbound = im.isFromRobot === true ? "是（入库标记为机器人侧）" : "否";
+      let skipExplain = t.skipAutoReplyReason || "";
+      if (t.status === "skipped_no_reply" && snap && snap.reason === "score below threshold") {
+        skipExplain =
+          (skipExplain ? skipExplain + "；" : "") +
+          "详情：决策得分 " +
+          snap.score +
+          "，阈值 " +
+          (snap.thresholdUsed != null ? snap.thresholdUsed : "—") +
+          "（多为非问句、意图未加分、或受「他人刚发言」等扣分影响）";
+      }
+      const lines = [
+        "【时间】" + fmtChinaTime(t.createdAt),
+        "【群名】" + (t.groupId || "—").replace(/^title:/, ""),
+        "【发言人】" + (im.senderName || "—"),
+        "【同发言人上下文（LLM 摘录元数据）】" + sscLine,
+        "【是否机器人消息】" + robotInbound + "（「是」表示入库时视为机器人侧；真正机器人自发自收会在入站阶段直接过滤，通常不会出现本页。若此处为否，则本条不是「因机器人自己发言而跳过」）",
+        "【原消息】" + (im.messageText || t.normalizedText || "—"),
+        "【消息类型】" + semantic,
+        "【状态】" + traceStatusZh(t.status),
+        "【是否被内容过滤】" + (filtered ? "是" : "否") + "（如重复发送、重复文案拦截等）",
+        "【未回复/跳过说明】" + (skipExplain || "—") + "（与上项不同：此处含决策未触发、风控、策略等）",
+        "【决策引擎】" +
+          (snap
+            ? "原因：" +
+              decisionReasonZh(snap.reason) +
+              " | 得分 " +
+              (snap.score != null ? snap.score : "—") +
+              " / 阈值 " +
+              (snap.thresholdUsed != null ? snap.thresholdUsed : "—") +
+              " | 意图 " +
+              (snap.intent || "—") +
+              " | 命中规则 " +
+              (Array.isArray(snap.matchedRules) ? snap.matchedRules.join(", ") : "—")
+            : "—（无快照，可能为过滤链路或未走决策）"),
+        "【是否进入 AI】" + enteredAiStr,
+        "【聚合数量】" + (t.burstGroupedCount != null ? String(t.burstGroupedCount) + " 条" : "—"),
+        "【合并消息预览】" + (t.mergedMessagesPreview || "—"),
+        "【最终用户侧 Prompt 预览】" + (t.finalUserPromptPreview || "—").slice(0, 500) + (t.finalUserPromptPreview && t.finalUserPromptPreview.length > 500 ? "…" : ""),
+        "【AI 回复预览】" + (t.llmResponsePreview || "—").slice(0, 300) + (t.llmResponsePreview && t.llmResponsePreview.length > 300 ? "…" : ""),
+        "【最终发送内容】" + (t.finalReply || "—"),
+        "【总耗时】" + fmtMs(ms.totalReplyMs),
+        "【各阶段耗时】入站→决策 " + fmtMs(ms.inboundToDecisionMs) + " | 决策 " + fmtMs(ms.decisionMs) + " | LLM " + fmtMs(ms.llmMs) + " | 队列等待 " + fmtMs(ms.queueWaitMs) + " | 执行端发送 " + fmtMs(ms.executorSendMs),
+        "【时间点】采集 " +
+          fmtChinaTime(at.inboundCapturedAt) +
+          " | 入库 " +
+          fmtChinaTime(at.inboundPersistedAt) +
+          " | 决策起止 " +
+          fmtChinaTime(at.replyDecisionStartedAt) +
+          " ~ " +
+          fmtChinaTime(at.replyDecisionFinishedAt) +
+          " | LLM " +
+          fmtChinaTime(at.llmStartedAt) +
+          " ~ " +
+          fmtChinaTime(at.llmFinishedAt) +
+          " | Outbound " +
+          fmtChinaTime(at.outboundCreatedAt) +
+          " | 任务创建 " +
+          fmtChinaTime(at.executorTaskCreatedAt) +
+          " | 发送起止 " +
+          fmtChinaTime(at.sendStartedAt) +
+          " ~ " +
+          fmtChinaTime(at.sendFinishedAt),
+        "【未创建发送任务】" +
+          (at.sendWorkerPrecheckReason
+            ? at.sendWorkerPrecheckReason + " @ " + fmtChinaTime(at.sendWorkerPrecheckBlockedAt)
+            : "—") +
+          "（若有原因则未入执行端队列；若均为 — 且任务未创建，多为队列未消费或 Worker 未连接）",
+        "【失败原因】" + (t.errorMessage || "—")
+      ];
+      return "<div class=\"trace-card\"><pre>" + lines.map(function (x) { return escapeHtml(x); }).join("\n") + "</pre></div>";
+    }
+
+    async function saveRuntime() {
+      try {
+      const defSel = document.getElementById("c_defProf").value.trim();
+      const body = {
+        llmBaseUrl: document.getElementById("c_llmUrl").value.trim() || null,
+        llmModel: document.getElementById("c_llmModel").value.trim() || null,
+        replyLlmProvider: document.getElementById("c_replyLlm").value,
+        arkBotBaseUrl: document.getElementById("c_arkUrl").value.trim() || null,
+        arkBotModel: document.getElementById("c_arkModel").value.trim() || null,
+        embeddingBaseUrl: document.getElementById("c_embUrl").value.trim() || null,
+        embeddingModel: document.getElementById("c_embModel").value.trim() || null,
+        defaultLanguage: document.getElementById("c_lang").value.trim() || null,
+        defaultReplyProfileId: defSel === "" ? null : defSel,
+        retrievalMode: document.getElementById("c_mode").value,
+        maxReplyChars: +document.getElementById("c_max").value || 120,
+        knowledgeFirst: document.getElementById("c_kf").checked,
+        allowLlmFallback: document.getElementById("c_fallback").checked
+      };
+      const lk = document.getElementById("c_llmKey").value.trim();
+      const ek = document.getElementById("c_embKey").value.trim();
+      const arkK = document.getElementById("c_arkKey").value.trim();
+      if (lk) body.llmApiKey = lk;
+      if (ek) body.embeddingApiKey = ek;
+      if (arkK) body.arkBotApiKey = arkK;
+      const j = await api("PUT", "/api/admin/config/runtime", body);
+      setKeyPlaceholders(j.data);
+      document.getElementById("cfg_out").textContent = JSON.stringify(j.data, null, 2);
+      alert("保存成功");
+      } catch (e) {
+        alert("保存失败：" + (e.message || e));
+      }
+    }
+
+    async function testConn(kind) {
+      const path =
+        kind === "llm"
+          ? "/api/admin/config/test-llm"
+          : kind === "ark"
+            ? "/api/admin/config/test-ark-bot"
+            : "/api/admin/config/test-embedding";
+      try {
+        const r = await fetch(API + path, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 401) {
+          showLogin("未登录或会话已过期，请重新登录");
+          document.getElementById("cfg_out").textContent = JSON.stringify(j, null, 2);
+          return;
+        }
+        document.getElementById("cfg_out").textContent = JSON.stringify(j, null, 2);
+        if (r.ok && j.success !== false) {
+          if (kind === "llm") alert("LLM 连通性正常");
+          else if (kind === "ark") alert("联网 Bot 连通性正常");
+          else alert("向量服务连通性正常");
+        } else alert("测试失败：" + (j.error?.message || r.statusText));
+      } catch (e) {
+        document.getElementById("cfg_out").textContent = "ERROR: " + e.message;
+        alert("测试失败：" + e.message);
+      }
+    }
+
+    async function loadProfiles() {
+      const j = await api("GET", "/api/admin/reply-profiles");
+      const items = j.data.items || [];
+      document.getElementById("prof_list").textContent = JSON.stringify(items, null, 2);
+      const wrap = document.getElementById("prof_wrap");
+      if (!items.length) {
+        wrap.innerHTML = "<p class=\"hint\">暂无回复风格，请在下方新建。</p>";
+        return;
+      }
+      const head = "<table class=\"data-table\"><thead><tr><th>名称</th><th>语言</th><th>最大字数</th><th>操作</th></tr></thead><tbody>";
+      const rows = items.map((p) =>
+        "<tr><td>" + escapeHtml(p.name) + "</td><td>" + escapeHtml(p.language || "") + "</td><td>" + escapeHtml(String(p.maxChars ?? "")) +
+        "</td><td><button type=\"button\" class=\"secondary\" data-pid=\"" + escapeHtml(p.id) + "\" data-act=\"edit\">编辑</button> " +
+        "<button type=\"button\" class=\"secondary\" data-pid=\"" + escapeHtml(p.id) + "\" data-act=\"del\">删除</button></td></tr>"
+      ).join("");
+      wrap.innerHTML = head + rows + "</tbody></table>";
+      wrap.querySelectorAll("button[data-act]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.getAttribute("data-pid");
+          if (btn.getAttribute("data-act") === "edit") startEditProfile(id);
+          else deleteProfile(id);
+        });
+      });
+    }
+
+    async function startEditProfile(id) {
+      const j = await api("GET", "/api/admin/reply-profiles/" + id);
+      const p = j.data;
+      document.getElementById("p_edit_id").value = id;
+      document.getElementById("p_name").value = p.name || "";
+      document.getElementById("p_sys").value = p.systemPrompt || "";
+      document.getElementById("p_style").value = p.stylePrompt || "";
+      document.getElementById("p_lang").value = p.language || "zh-CN";
+      document.getElementById("p_max").value = p.maxChars != null ? p.maxChars : 120;
+      document.getElementById("p_emoji").value = p.emojiPolicy != null ? p.emojiPolicy : "allow_limited";
+      document.getElementById("p_mention").value = p.mentionPolicy != null ? p.mentionPolicy : "avoid_unless_needed";
+      document.getElementById("prof_form_title").textContent = "编辑回复风格";
+      document.getElementById("p_submit_btn").textContent = "保存修改";
+      document.getElementById("p_cancel_edit").style.display = "";
+    }
+
+    function cancelProfileEdit() {
+      document.getElementById("p_edit_id").value = "";
+      document.getElementById("p_name").value = "";
+      document.getElementById("p_sys").value = "";
+      document.getElementById("p_style").value = "";
+      document.getElementById("p_lang").value = "zh-CN";
+      document.getElementById("p_max").value = "120";
+      document.getElementById("p_emoji").value = "allow_limited";
+      document.getElementById("p_mention").value = "avoid_unless_needed";
+      document.getElementById("prof_form_title").textContent = "新建回复风格";
+      document.getElementById("p_submit_btn").textContent = "创建";
+      document.getElementById("p_cancel_edit").style.display = "none";
+    }
+
+    async function submitProfile() {
+      const editId = document.getElementById("p_edit_id").value.trim();
+      const payload = {
+        name: document.getElementById("p_name").value,
+        systemPrompt: document.getElementById("p_sys").value,
+        stylePrompt: document.getElementById("p_style").value || undefined,
+        language: document.getElementById("p_lang").value,
+        maxChars: +document.getElementById("p_max").value,
+        emojiPolicy: document.getElementById("p_emoji").value,
+        mentionPolicy: document.getElementById("p_mention").value
+      };
+      try {
+        if (editId) await api("PUT", "/api/admin/reply-profiles/" + editId, payload);
+        else await api("POST", "/api/admin/reply-profiles", payload);
+        cancelProfileEdit();
+        await loadProfiles();
+        alert(editId ? "已保存" : "已创建");
+      } catch (e) {
+        alert("保存失败：" + (e.message || e));
+      }
+    }
+
+    async function deleteProfile(id) {
+      if (!confirm("确定删除该回复风格？")) return;
+      try {
+        await api("DELETE", "/api/admin/reply-profiles/" + id);
+        cancelProfileEdit();
+        await loadProfiles();
+      } catch (e) {
+        alert("删除失败：" + (e.message || e));
+      }
+    }
+
+    function renderPolicyTable(items) {
+      const el = document.getElementById("pol_list");
+      if (!items.length) {
+        el.innerHTML = "<p class=\"hint\">暂无已保存的群策略。请选择群并点击保存以创建。</p>";
+        return;
+      }
+      const head = "<table class=\"data-table\"><thead><tr><th>群</th><th>回复模型</th><th>回复风格</th><th>知识库</th><th>自动回复</th><th>检索模式</th><th>同发言人参考</th></tr></thead><tbody>";
+      const rows = items.map((p) => {
+        const g = p.group || {};
+        const title = groupLabel(g) || p.groupId;
+        const llmZh =
+          p.replyLlmProvider === "ark_bot" ? "联网 Bot" : p.replyLlmProvider === "standard" ? "标准 LLM" : "继承默认";
+        const pn = (p.replyProfile && p.replyProfile.name) || "—";
+        const cn = (p.knowledgeCollection && p.knowledgeCollection.name) || "—";
+        const ar = p.autoReplyEnabled ? "开" : "关";
+        const rm = RETRIEVAL_ZH[p.retrievalMode] || p.retrievalMode || "—";
+        const sscOff = p.sameSenderContextEnabled === false;
+        const win = p.sameSenderContextWindowMinutes != null ? p.sameSenderContextWindowMinutes : 5;
+        const chars = p.sameSenderContextMaxTotalChars != null ? p.sameSenderContextMaxTotalChars : 3500;
+        const sscZh = sscOff ? "关" : win + "分钟·≤" + chars + "字";
+        return "<tr><td>" + escapeHtml(title) + "</td><td>" + escapeHtml(llmZh) + "</td><td>" + escapeHtml(pn) + "</td><td>" + escapeHtml(cn) +
+          "</td><td>" + escapeHtml(ar) + "</td><td>" + escapeHtml(rm) + "</td><td>" + escapeHtml(sscZh) + "</td></tr>";
+      }).join("");
+      el.innerHTML = head + rows + "</tbody></table>";
+    }
+
+    function resetPolicyFormDefaults() {
+      document.getElementById("gp_prof_sel").value = "";
+      document.getElementById("gp_col_sel").value = "";
+      document.getElementById("gp_thr").value = "";
+      document.getElementById("gp_auto").checked = true;
+      document.getElementById("gp_kf").checked = true;
+      document.getElementById("gp_can").checked = true;
+      document.getElementById("gp_risk").checked = true;
+      document.getElementById("gp_human").checked = false;
+      document.getElementById("gp_mode").value = "keyword_first";
+      const gl = document.getElementById("gp_llm_prov");
+      if (gl) gl.value = "";
+      document.getElementById("gp_ssc_en").checked = true;
+      document.getElementById("gp_ssc_win").value = "5";
+      document.getElementById("gp_ssc_umax").value = "8";
+      document.getElementById("gp_ssc_bmax").value = "5";
+      document.getElementById("gp_ssc_chars").value = "3500";
+    }
+
+    function applyPolicyToForm(p) {
+      if (!p) {
+        resetPolicyFormDefaults();
+        return;
+      }
+      const gl = document.getElementById("gp_llm_prov");
+      if (gl) {
+        gl.value =
+          p.replyLlmProvider === "ark_bot" || p.replyLlmProvider === "standard" ? p.replyLlmProvider : "";
+      }
+      document.getElementById("gp_prof_sel").value = p.replyProfileId || "";
+      document.getElementById("gp_col_sel").value = p.knowledgeCollectionId || "";
+      document.getElementById("gp_thr").value = p.scoreThreshold != null ? String(p.scoreThreshold) : "";
+      document.getElementById("gp_auto").checked = !!p.autoReplyEnabled;
+      document.getElementById("gp_kf").checked = !!p.knowledgeFirst;
+      document.getElementById("gp_can").checked = !!p.cannedFirst;
+      document.getElementById("gp_risk").checked = !!p.riskInterceptEnabled;
+      document.getElementById("gp_human").checked = !!p.humanTakeover;
+      document.getElementById("gp_mode").value = p.retrievalMode || "keyword_first";
+      document.getElementById("gp_ssc_en").checked = p.sameSenderContextEnabled !== false;
+      document.getElementById("gp_ssc_win").value = String(p.sameSenderContextWindowMinutes != null ? p.sameSenderContextWindowMinutes : 5);
+      document.getElementById("gp_ssc_umax").value = String(p.sameSenderContextMaxUserMessages != null ? p.sameSenderContextMaxUserMessages : 8);
+      document.getElementById("gp_ssc_bmax").value = String(p.sameSenderContextMaxBotMessages != null ? p.sameSenderContextMaxBotMessages : 5);
+      document.getElementById("gp_ssc_chars").value = String(p.sameSenderContextMaxTotalChars != null ? p.sameSenderContextMaxTotalChars : 3500);
+    }
+
+    function onPolicyGroupChange() {
+      const gid = document.getElementById("gp_group_sel").value;
+      if (!gid) {
+        resetPolicyFormDefaults();
+        return;
+      }
+      const p = _policiesCache.find((x) => x.groupId === gid);
+      applyPolicyToForm(p || null);
+    }
+
+    async function loadPolFull() {
+      const [polJ, profJ, colJ] = await Promise.all([
+        api("GET", "/api/admin/group-policies"),
+        api("GET", "/api/admin/reply-profiles"),
+        api("GET", "/api/admin/knowledge/collections")
+      ]);
+      await refreshGroupsCache();
+      _policiesCache = polJ.data.items || [];
+      const profItems = profJ.data.items || [];
+      const colItems = colJ.data.items || [];
+      renderPolicyTable(_policiesCache);
+      document.getElementById("pol_raw").textContent = JSON.stringify(_policiesCache, null, 2);
+      fillGroupSelect("gp_group_sel", "请选择群…");
+      fillProfileSelect("gp_prof_sel", profItems, true, "不指定");
+      fillCollectionSelect("gp_col_sel", colItems, true, "不指定");
+      const curG = document.getElementById("gp_group_sel").value;
+      if (curG) onPolicyGroupChange();
+      else resetPolicyFormDefaults();
+    }
+
+    async function loadCols() {
+      const j = await api("GET", "/api/admin/knowledge/collections");
+      const items = j.data.items || [];
+      document.getElementById("kb_cols").textContent = JSON.stringify(items, null, 2);
+      const wrap = document.getElementById("kb_cols_wrap");
+      if (!items.length) wrap.innerHTML = "<p class=\"hint\">暂无集合。</p>";
+      else {
+        wrap.innerHTML = "<table class=\"data-table\"><thead><tr><th>名称</th><th>ID</th></tr></thead><tbody>" +
+          items.map((c) => "<tr><td>" + escapeHtml(c.name) + "</td><td><code>" + escapeHtml(c.id) + "</code></td></tr>").join("") +
+          "</tbody></table>";
+      }
+      fillCollectionSelect("doc_col", items, true, "默认（不指定）");
+      fillCollectionSelect("rq_col", items, true, "全部/默认");
+    }
+
+    async function ensureKbSelects() {
+      const j = await api("GET", "/api/admin/knowledge/collections");
+      const items = j.data.items || [];
+      fillCollectionSelect("doc_col", items, true, "默认（不指定）");
+      fillCollectionSelect("rq_col", items, true, "全部/默认");
+    }
+
+    async function createCol() {
+      await api("POST", "/api/admin/knowledge/collections", { name: document.getElementById("col_name").value });
+      loadCols();
+    }
+
+    async function createDoc() {
+      await api("POST", "/api/admin/knowledge/documents", {
+        title: document.getElementById("doc_title").value,
+        type: "faq",
+        content: document.getElementById("doc_content").value,
+        collectionId: document.getElementById("doc_col").value || undefined
+      });
+      alert("已创建。如需向量检索请在后端执行重建索引或调用 reindex 接口。");
+    }
+
+    async function previewRetr() {
+      const j = await api("POST", "/api/admin/knowledge/retrieval-preview", {
+        query: document.getElementById("rq").value,
+        collectionId: document.getElementById("rq_col").value || undefined,
+        mode: document.getElementById("rq_mode").value
+      });
+      document.getElementById("kb_out").textContent = JSON.stringify(j.data.chunks, null, 2);
+    }
+
+    async function savePol() {
+      try {
+      const gid = document.getElementById("gp_group_sel").value;
+      if (!gid) {
+        alert("请先选择群");
+        return;
+      }
+      const thr = document.getElementById("gp_thr").value;
+      const llmProv = document.getElementById("gp_llm_prov").value;
+      await api("POST", "/api/admin/group-policies", {
+        groupId: gid,
+        replyLlmProvider: llmProv === "" ? null : llmProv,
+        replyProfileId: document.getElementById("gp_prof_sel").value || null,
+        knowledgeCollectionId: document.getElementById("gp_col_sel").value || null,
+        scoreThreshold: thr === "" ? null : +thr,
+        autoReplyEnabled: document.getElementById("gp_auto").checked,
+        knowledgeFirst: document.getElementById("gp_kf").checked,
+        cannedFirst: document.getElementById("gp_can").checked,
+        riskInterceptEnabled: document.getElementById("gp_risk").checked,
+        humanTakeover: document.getElementById("gp_human").checked,
+        retrievalMode: document.getElementById("gp_mode").value,
+        sameSenderContextEnabled: document.getElementById("gp_ssc_en").checked,
+        sameSenderContextWindowMinutes: +document.getElementById("gp_ssc_win").value,
+        sameSenderContextMaxUserMessages: +document.getElementById("gp_ssc_umax").value,
+        sameSenderContextMaxBotMessages: +document.getElementById("gp_ssc_bmax").value,
+        sameSenderContextMaxTotalChars: +document.getElementById("gp_ssc_chars").value
+      });
+      await loadPolFull();
+      document.getElementById("gp_group_sel").value = gid;
+      onPolicyGroupChange();
+      alert("保存成功");
+      } catch (e) {
+        alert("保存失败：" + (e.message || e));
+      }
+    }
+
+    function renderCannedTable(items) {
+      const wrap = document.getElementById("can_wrap");
+      if (!items.length) {
+        wrap.innerHTML = "<p class=\"hint\">暂无规则。</p>";
+        return;
+      }
+      const scopeZh = { global: "全局", group: "指定群" };
+      const mtZh = { contains: "包含", exact: "完全相等", regex: "正则" };
+      const head = "<table class=\"data-table\"><thead><tr><th>范围</th><th>群</th><th>关键词</th><th>匹配</th><th>优先级</th><th>回复摘要</th></tr></thead><tbody>";
+      const rows = items.map((r) => {
+        const gid = r.groupId || "";
+        const g = _groupsList.find((x) => x.id === gid);
+        const gshow = r.scopeType === "group" ? (groupLabel(g) || gid || "—") : "—";
+        const replyShort = (r.replyText || "").slice(0, 48) + ((r.replyText || "").length > 48 ? "…" : "");
+        return "<tr><td>" + escapeHtml(scopeZh[r.scopeType] || r.scopeType) + "</td><td>" + escapeHtml(gshow) +
+          "</td><td>" + escapeHtml(r.keyword) + "</td><td>" + escapeHtml(mtZh[r.matchType] || r.matchType) +
+          "</td><td>" + escapeHtml(String(r.priority)) + "</td><td>" + escapeHtml(replyShort) + "</td></tr>";
+      }).join("");
+      wrap.innerHTML = head + rows + "</tbody></table>";
+    }
+
+    async function loadCan() {
+      await refreshGroupsCache();
+      const j = await api("GET", "/api/admin/canned-rules");
+      const items = j.data.items || [];
+      document.getElementById("can_list").textContent = JSON.stringify(items, null, 2);
+      renderCannedTable(items);
+    }
+
+    function toggleCannedGroupRow() {
+      const scope = document.getElementById("cn_scope").value;
+      document.getElementById("cn_gid_row").style.display = scope === "group" ? "block" : "none";
+    }
+
+    async function ensureCannedGroups() {
+      await refreshGroupsCache();
+      fillGroupSelect("cn_gid_sel", "请选择群…");
+      toggleCannedGroupRow();
+    }
+
+    async function ensureToolGroups() {
+      await refreshGroupsCache();
+      fillGroupSelect("pv_gid_sel", "请选择群…");
+    }
+
+    async function createCan() {
+      const scope = document.getElementById("cn_scope").value;
+      const gid = scope === "group" ? document.getElementById("cn_gid_sel").value : undefined;
+      if (scope === "group" && !gid) {
+        alert("请选择群");
+        return;
+      }
+      await api("POST", "/api/admin/canned-rules", {
+        scopeType: scope,
+        groupId: gid || undefined,
+        keyword: document.getElementById("cn_kw").value,
+        matchType: document.getElementById("cn_mt").value,
+        replyText: document.getElementById("cn_txt").value,
+        priority: +document.getElementById("cn_pri").value
+      });
+      loadCan();
+    }
+
+    async function exportTracesCsv() {
+      const params = new URLSearchParams();
+      const from = document.getElementById("tr_exp_from").value.trim();
+      const to = document.getElementById("tr_exp_to").value.trim();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (document.getElementById("tr_exp_only_reply").checked) params.set("onlyWithReply", "1");
+      const fg = document.getElementById("tr_filter_gid");
+      const fs = document.getElementById("tr_filter_sender");
+      if (fg && fg.value) params.set("groupId", fg.value);
+      if (fs && fs.value.trim()) params.set("senderKey", fs.value.trim());
+      const url = API + "/api/admin/reply-traces/export.csv?" + params.toString();
+      try {
+        const r = await fetch(url, { credentials: "include" });
+        if (r.status === 401) {
+          showLogin("未登录或会话已过期，请重新登录");
+          return;
+        }
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert("导出失败：" + (err.error?.message || r.statusText));
+          return;
+        }
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "reply-traces.csv";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        alert("导出失败：" + (e.message || e));
+      }
+    }
+
+    async function loadTrace() {
+      const prevG = document.getElementById("tr_filter_gid") ? document.getElementById("tr_filter_gid").value : "";
+      const prevS = document.getElementById("tr_filter_sender") ? document.getElementById("tr_filter_sender").value : "";
+      await refreshGroupsCache();
+      fillGroupSelect("tr_filter_gid", "全部群");
+      const gsel = document.getElementById("tr_filter_gid");
+      const ssel = document.getElementById("tr_filter_sender");
+      if (gsel && prevG) gsel.value = prevG;
+      if (ssel) ssel.value = prevS;
+      let path = "/api/admin/reply-traces?page=1&pageSize=30";
+      const gid = gsel ? gsel.value : "";
+      const snd = ssel ? ssel.value.trim() : "";
+      if (gid) path += "&groupId=" + encodeURIComponent(gid);
+      if (snd) path += "&senderKey=" + encodeURIComponent(snd);
+      const j = await api("GET", path);
+      const items = j.data.items || [];
+      const el = document.getElementById("tr_list");
+      if (!items.length) {
+        el.innerHTML = "<p>暂无 Trace</p>";
+        return;
+      }
+      el.innerHTML = items.map(formatTraceCard).join("<hr style=\"border-color:#30363d;margin:16px 0\" />");
+    }
+
+    async function previewReply() {
+      const gid = document.getElementById("pv_gid_sel").value;
+      if (!gid) {
+        alert("请选择群");
+        return;
+      }
+      const j = await api("POST", "/api/admin/reply-preview", {
+        groupId: gid,
+        messageText: document.getElementById("pv_msg").value
+      });
+      document.getElementById("pv_out").textContent = JSON.stringify(j.data, null, 2);
+    }
+
+    async function smokeSend() {
+      const j = await api("POST", "/api/admin/group-smoke-send", {
+        targetChatTitle: document.getElementById("sm_title").value,
+        text: document.getElementById("sm_text").value
+      });
+      document.getElementById("sm_out").textContent = JSON.stringify(j.data, null, 2);
+    }
+
+    document.getElementById("login_btn").addEventListener("click", doLogin);
+    document.getElementById("logout_btn").addEventListener("click", doLogout);
+    document.getElementById("login_pass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+
+    (async function boot() {
+      const ok = await trySession();
+      if (ok) init();
+      else showLogin("");
+    })();
+  </script>
+</body>
+</html>

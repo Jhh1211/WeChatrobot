@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">WE Executor</string>
+  <string name="accessibility_service_label">企业微信群消息执行器</string>
+  <string name="accessibility_service_description">在用户已登录的企业微信中读取聊天界面文本并执行发送任务。不进行抓包或协议逆向，仅 UI 自动化。</string>
+</resources>

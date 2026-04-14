@@ -1,0 +1,14 @@
+{
+  "name": "wework-ai-assistant-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir server dev",
+    "dev:server": "pnpm --dir server dev",
+    "dev:android": "node -e \"console.log('请在 android-executor 目录用 Android Studio 打开工程并运行 App（真机/模拟器）。');\"",
+    "build": "pnpm --dir server build",
+    "test": "pnpm --dir server test",
+    "prisma:migrate": "pnpm --dir server prisma:migrate",
+    "bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
+    "smoke:executor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-executor.ps1"
+  }
+}
