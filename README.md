@@ -1,4 +1,4 @@
-# wework-ai-assistant（Monorepo · 自托管 MVP）
+# wework-ai-assistant（Monorepo · 自托管 ）
 
 **唯一后端**：`server/`（Node.js + Fastify + Prisma + BullMQ）。  
 **唯一执行端**：`android-executor/`（Kotlin + 无障碍自动化）。  
@@ -131,8 +131,6 @@ API 起来后再跑冒烟：
 | `task` 已成功但 `outbound_messages` 未更新 | 任务是否带 `outboundMessageId`；是否走的 `POST .../result`；重复 `result` 对已终态任务为幂等，不会改回。 |
 
 ## 合规与能力边界（声明）
-
-- **不购买** WorkTool **robotId**，**不依赖** WorkTool **商业版**作为主发送通道。
 - 仅支持 **用户自有安卓设备** + **用户已登录的企业微信账号** + **系统无障碍** 完成 UI 自动化；请自行评估平台协议与内控要求。
 
 更多服务端细节见 **[server/README.md](server/README.md)**。
